@@ -53,13 +53,13 @@ void set_physical_mem(void) {
   uint32_t v_bmap_bytes = ((MAX_MEMSIZE / PGSIZE) + 7) / 8;
   v_bmap = malloc(v_bmap_bytes);
 
-  // the top frame(s) are reserved for the page directory
+  // the top frame(s) are reserved for the page directory (pgdir)
   uint32_t max_pd_entries = 1 << PDX_BITS;
   uint32_t max_pd_bytes = max_pd_entries * sizeof(pde_t);
   uint32_t max_pd_pages = (max_pd_bytes + PGSIZE - 1) / PGSIZE;
 
-  pde_t* pg_dir_top = (pde_t*)p_buff;
-  memset(page_dir_top, 0, max_pd_bytes);
+  pde_t* pgdir_top = (pde_t*)p_buff;
+  memset(pgdir_top, 0, max_pd_bytes);
 
   //mark these frames as occupied in the virtual/physical bitmaps
   uint32_t max_frames_in_bytes = max_pd_bytes / 8;
@@ -69,7 +69,6 @@ void set_physical_mem(void) {
   for(int i = 0; i < remainder_frames; i++) {
     set_bit(p_bmap, (max_frames_in_bytes * 8) + i);
   }
-  
 }
 
 // -----------------------------------------------------------------------------
@@ -136,12 +135,24 @@ void print_TLB_missrate(void)
  *   Pointer to the PTE structure if translation succeeds.
  *   NULL if translation fails (e.g., page not mapped).
  */
-pte_t *translate(pde_t *pgdir, void *va)
+pte_t* translate(pde_t* pgdir, void* va)
 {
-    // TODO: Extract the 32-bit virtual address and compute indices
+    // extract the 32-bit virtual address and compute indices
     // for the page directory, page table, and offset.
-    // Return the corresponding PTE if found.
-    return NULL; // Translation unsuccessful placeholder.
+    // return the corresponding PTE if found.
+ 
+    vaddr32_t v_addr = VA2U(va);
+
+    uint32_t pgdir_idx = PDX(v_addr);
+    pde_t pgdir_entry = pgdir[pgdir_idx];
+    if(pgdir_entry == 0) return NULL;
+
+    uint32_t pgtbl_idx = PTX(v_addr);
+    uint32_t* pgtbl = (pte_t*)(pgdir_entry & ~OFFMASK);
+    pte_t* pgtbl_entry_ptr = &(pgtbl[pgtbl_idx]);
+    if(pgtbl_entry_ptr == 0) return NULL;
+
+    return pgtbl_entry_ptr;
 }
 
 /*

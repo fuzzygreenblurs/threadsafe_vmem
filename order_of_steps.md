@@ -121,6 +121,43 @@ void clear_bit(char* bmap, int idx) {
      
     ```
 
+6. `translate()`: implementation
+
+DESIGN DISCUSSION: discuss why you chose 10bit for each level of the multi-level page table. 
+    - page tables entries correspond to 12 bit offsets (ie. 1 page per entry)
+    - page tables must be fully allocated (static arrays) upon initialization
+        - pro: pointer arithmetic for fast updates/lookups
+        - con: a very page table would require more memory during allocation causing internal fragmentation
+            - linear page table takes a huge amount of memory in one go!
+            - it needs an entry for every virtual page in process address space, even if those pages are empty
+            - spreading the bits facilitates the multi-level page queue part of this structure
+            - MLPQs keep the page tables small and modular
+
+
+   ```c
+
+   pte_t* translate(pde_t* pgdir, void* va)
+   {
+       // TODO: Extract the 32-bit virtual address and compute indices
+       // for the page directory, page table, and offset.
+       // Return the corresponding PTE if found.
+    
+       vaddr32_t v_addr = VA2U(va);
+
+       uint32_t pgdir_idx = PDX(v_addr);
+       pde_t pgdir_entry = pgdir[pgdir_idx];
+       if(pgdir_entry == 0) return NULL;
+
+       uint32_t pgtbl_idx = PTX(v_addr);
+       uint32_t* pgtbl = (pte_t*)(pgdir_entry & ~OFFMASK);
+       pte_t* pgtbl_entry = &(pgtbl[pgtbl_idx]);
+       if(pgtbl_entry == 0) return NULL;
+
+       return pgtbl_entry;
+   }
+   ```
+
+    
 
 
 
