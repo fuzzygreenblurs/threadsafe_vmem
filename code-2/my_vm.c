@@ -17,7 +17,10 @@ static unsigned long long tlb_misses  = 0;
 static void* p_buff;
 static void* p_bmap;
 static void* v_bmap;
-  
+
+static pde_t* pgdir = NULL;
+static pthread_mutex_t lock;
+
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
@@ -49,26 +52,30 @@ void set_physical_mem(void) {
 
   uint32_t p_bmap_bytes = ((MEMSIZE / PGSIZE) + 7) / 8;
   p_bmap = malloc(p_bmap_bytes);
+  memset(p_bmap, 0, p_bmap_bytes);
 
   uint32_t v_bmap_bytes = ((MAX_MEMSIZE / PGSIZE) + 7) / 8;
   v_bmap = malloc(v_bmap_bytes);
-
+  memset(v_bmap, 0, v_bmap_bytes);
+  
   // the top frame(s) are reserved for the page directory (pgdir)
   uint32_t max_pd_entries = 1 << PDX_BITS;
   uint32_t max_pd_bytes = max_pd_entries * sizeof(pde_t);
   uint32_t max_pd_pages = (max_pd_bytes + PGSIZE - 1) / PGSIZE;
 
-  pde_t* pgdir_top = (pde_t*)p_buff;
-  memset(pgdir_top, 0, max_pd_bytes);
+  pgdir = (pde_t*)p_buff;
+  memset(pgdir, 0, max_pd_bytes);
 
   //mark these frames as occupied in the virtual/physical bitmaps
-  uint32_t max_frames_in_bytes = max_pd_bytes / 8;
+  uint32_t max_frames_in_bytes = max_pd_pages / 8;
   memset(p_bmap, 0xFF, max_frames_in_bytes);
 
-  uint32_t remainder_frames = max_pd_bytes % 8;
+  uint32_t remainder_frames = max_pd_pages % 8;
   for(int i = 0; i < remainder_frames; i++) {
     set_bit(p_bmap, (max_frames_in_bytes * 8) + i);
   }
+
+  pthread_mutex_init(&lock, NULL);
 }
 
 // -----------------------------------------------------------------------------
@@ -148,9 +155,9 @@ pte_t* translate(pde_t* pgdir, void* va)
     if(pgdir_entry == 0) return NULL;
 
     uint32_t pgtbl_idx = PTX(v_addr);
-    uint32_t* pgtbl = (pte_t*)(pgdir_entry & ~OFFMASK);
+    pte_t* pgtbl = (pte_t*)(pgdir_entry & ~OFFMASK);
     pte_t* pgtbl_entry_ptr = &(pgtbl[pgtbl_idx]);
-    if(pgtbl_entry_ptr == 0) return NULL;
+    if(*pgtbl_entry_ptr == 0) return NULL;
 
     return pgtbl_entry_ptr;
 }
@@ -167,8 +174,30 @@ pte_t* translate(pde_t* pgdir, void* va)
  */
 int map_page(pde_t *pgdir, void *va, void *pa)
 {
-    // TODO: Map virtual address to physical address in the page tables.
-    return -1; // Failure placeholder.
+    // TODO: map virtual address to physical address in the page tables.
+    // make this threadsafe
+    // check if there is an existing mapping for a virtual address
+    vaddr32_t v_addr = VA2U(va);
+    uint32_t pgdir_idx = PDX(v_addr);
+    uint32_t pgtbl_idx = PTX(v_addr);
+  
+    // "upsert" the target page table
+    if(!(pgdir[pgdir_idx] & IN_USE)) {
+      // allocate pgtbl and zero it
+      void* pgtbl_frame = alloc_frame();
+      if(pgtbl_frame == NULL) return -1;
+  
+      memset(pgtbl_frame, 0, PGSIZE);
+      pgdir[pgdir_idx] = (uint32_t)(uintptr_t)pgtbl_frame | IN_USE;
+    }
+
+    pte_t* pgtbl = (pte_t*)(pgdir[pgdir_idx] & ~OFFMASK);
+    if(!(pgtbl[pgtbl_idx] & IN_USE)) {
+      pgtbl[pgtbl_idx] = (uint32_t)(uintptr_t)pa | IN_USE;
+      return 0;
+    }
+
+    return -1;
 }
 
 // -----------------------------------------------------------------------------
@@ -187,8 +216,8 @@ int map_page(pde_t *pgdir, void *va, void *pa)
  */
 void *get_next_avail(int num_pages)
 {
-    // TODO: Implement virtual bitmap search for free pages.
     return NULL; // No available block placeholder.
+
 }
 
 /*
@@ -307,7 +336,7 @@ void set_bit(char* bmap, int idx) {
 }
 
 void clear_bit(char* bmap, int idx) {
-  uint32_t target_byte = bmap[idx / 8];
+  uint32_t target_byte = idx / 8;
   uint8_t target_bit  = idx % 8;
   bmap[target_byte] &= ~(1 << (target_bit));
 }
@@ -315,6 +344,17 @@ void clear_bit(char* bmap, int idx) {
 int get_bit(char* bmap, int idx) {
   uint32_t target_byte = idx / 8;
   uint8_t target_bit  = idx % 8;
-  return bmap[target_byte] & (1 << (target_bit);
+  return bmap[target_byte] & (1 << (target_bit));
+}
+
+void* alloc_frame() {
+  for(uint32_t i = 0; i < MAX_NUM_FRAMES; i++) {
+    if(get_bit(p_bmap, i) == 0) {
+      set_bit(p_bmap, i);
+      return (void*)(p_buff + (i * PGSIZE));
+    }
+  }
+
+  return NULL;        // bitmap is full (i.e. out of memory) 
 }
 

@@ -41,14 +41,15 @@
 // a string of trailing 0s. The number of trailing zeros will match the power!
 // ex: 4KB = 4096 bytes = 2^12 bytes (0b1_000_000_000_000)
 #define OFFSET_BITS    __builtin_ctz(PGSIZE)
-#define PDX_BITS       (32 - OFFSET_BITS) / 2
-#define PTX_BITS       (32 - OFFSET_BITS) - PDX_BITS
+#define PDX_BITS       ((32 - OFFSET_BITS) / 2)
+#define PTX_BITS       ((32 - OFFSET_BITS) - PDX_BITS)
 
-// --- Constants for bit shifts and masks ---
-#define PDXSHIFT       PTX_BITS + OFFSET_BITS   /** TODO: number of bits to shift for directory index **/
-#define PTXSHIFT       OFFSET_BITS              /** TODO: number of bits to shift for table index **/
-#define PXMASK         ((1 << PTX_BITS) - 1)    /** TODO:  **/
-#define OFFMASK        ((1 << OFFSET_BITS) - 1) /** TODO:  **/
+// --- Constants for bit shifts and masks -- 
+#define PDXSHIFT       (PTX_BITS + OFFSET_BITS)
+#define PTXSHIFT       OFFSET_BITS              
+#define PXMASK         ((1 << PTX_BITS) - 1)   
+#define OFFMASK        ((1 << OFFSET_BITS) - 1) 
+#define MAX_NUM_FRAMES ((uint32_t)MEMSIZE / PGSIZE)
 
 // --- Macros to extract address components ---
 #define PDX(va)        ((va) >> (OFFSET_BITS + PTX_BITS))             /** compute directory idx from virtual addr **/
@@ -68,7 +69,8 @@ typedef uint32_t pde_t;       // Page directory entry
 //  Page Table Flags (Students fill as needed)
 // -----------------------------------------------------------------------------
 
-#define PFN_SHIFT     /** TODO: number of bits to shift**/
+#define PFN_SHIFT         /** TODO: number of bits to shift**/
+#define IN_USE 0x01
 
 // -----------------------------------------------------------------------------
 //  Address Conversion Helpers (Provided)

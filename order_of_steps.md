@@ -121,6 +121,9 @@ void clear_bit(char* bmap, int idx) {
      
     ```
 
+    - note: explicitly zero out the pgdir bytes. this ensures that an IN_USE flag can be
+    set explicitly for each pde_t entry (LSB).
+
 6. `translate()`: implementation
 
 DESIGN DISCUSSION: discuss why you chose 10bit for each level of the multi-level page table. 
@@ -157,10 +160,33 @@ DESIGN DISCUSSION: discuss why you chose 10bit for each level of the multi-level
    }
    ```
 
-    
+7. `map_page`: implementation
+    - objective: create a virtual to physical address mapping
+
+    - extract the PDX, PTX indices from the VA
+    - check if the target page table exists using PDX => pgtbl_ptr
+        - if false: 
+            - allocate a new page table in the buffer (1 frame)
+            - zero the frame 
+            - store the pde_t[frame address + flags] at pgdir[PDX]
+
+    - check if pgtbl[PTX] exists
+        - if true:
+            - the virtual address is already mapped to a frame
+            - return error "invalid va."
+
+        - if false:
+            - set pgtbl[PTX] = pa | IS_ALLOCD
 
 
 
+
+- some other steps that were done here:
+    - `IS_ALLOCD` is used as a flag to mark 
+    - `pgdir` is now a static global variable 
+    - `lock` pthread mutex is initialized
+
+- input: pde_t* pgdir, VA, PA
 
 ############
 ## PART 2 ##
