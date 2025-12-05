@@ -86,7 +86,7 @@ static inline void*     U2VA(vaddr32_t u)  { return (void*)(uintptr_t)u; }
 
 struct tlb {
   uint32_t vpn[TLB_ENTRIES];
-  pte_t pte[TLB_ENTRIES];
+  pte_t* pte[TLB_ENTRIES];
   bool in_use[TLB_ENTRIES];
   uint32_t last_used[TLB_ENTRIES];
 };

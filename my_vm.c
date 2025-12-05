@@ -1,4 +1,3 @@
-
 #include "my_vm.h"
 #include <string.h>   // optional for memcpy if you later implement put/get
 #include <sys/mman.h>
@@ -20,7 +19,7 @@ static void* v_bmap;
 
 static pde_t* pgdir = NULL;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t two_op_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t pg_tbl_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t multi_op_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // -----------------------------------------------------------------------------
@@ -40,21 +39,18 @@ void set_physical_mem(void) {
   // use 32-bit values for sizes, page counts, and offsets.
   
   // https://man7.org/linux/man-pages/man2/mmap.2.html
-  pthread_mutex_lock(&lock);
   p_buff = mmap(NULL,
                MEMSIZE,
                PROT_READ | PROT_WRITE,
                MAP_PRIVATE | MAP_ANONYMOUS, 
                -1,
                0);
-  pthread_mutex_unlock(&lock);
 
   if(p_buff == MAP_FAILED) {
     perror("mmap failed.");
     exit(1);
   }
 
-  pthread_mutex_lock(&lock);
   memset(&tlb_store, 0, sizeof(tlb_store));
 
   uint32_t p_bmap_bytes = ((MEMSIZE / PGSIZE) + 7) / 8;
@@ -64,9 +60,10 @@ void set_physical_mem(void) {
   uint32_t v_bmap_bytes = ((MAX_MEMSIZE / PGSIZE) + 7) / 8;
   v_bmap = malloc(v_bmap_bytes);
   memset(v_bmap, 0, v_bmap_bytes);
-  pthread_mutex_unlock(&lock);
-
+  
+  pthread_mutex_lock(&lock);
   set_bit(v_bmap, 0);
+  pthread_mutex_unlock(&lock);
   
   // the top frame(s) are reserved for the page directory (pgdir)
   uint32_t max_pd_entries = 1 << PDX_BITS;
@@ -74,14 +71,12 @@ void set_physical_mem(void) {
   uint32_t max_pd_pages = (max_pd_bytes + PGSIZE - 1) / PGSIZE;
 
 
-  pthread_mutex_lock(&lock);
   pgdir = (pde_t*)p_buff;
   memset(pgdir, 0, max_pd_bytes);
 
   //mark these frames as occupied in the virtual/physical bitmaps
   uint32_t max_frames_in_bytes = max_pd_pages / 8;
   memset(p_bmap, 0xFF, max_frames_in_bytes);
-  pthread_mutex_unlock(&lock);
 
   uint32_t remainder_frames = max_pd_pages % 8;
   for(int i = 0; i < remainder_frames; i++) {
@@ -107,32 +102,32 @@ int TLB_add(void *va, void *pa)
 {
     vaddr32_t va_u = VA2U(va);
     uint32_t vpn = va_u >> OFFSET_BITS;
-    paddr32_t pa_offset = (char*)pa - (char*)p_buff;
-    pte_t pte = pa_offset | IN_USE;
+    pte_t* pte_ptr = (pte_t*)pa;
 
     pthread_mutex_lock(&lock);
     // upsert the entry
     for(int i = 0; i < TLB_ENTRIES; i++) {
       if(tlb_store.in_use[i] && vpn == tlb_store.vpn[i]) {
-        tlb_store.pte[i] = pte;
+        tlb_store.pte[i] = pte_ptr;
         tlb_store.last_used[i] = tlb_lookups;
         pthread_mutex_unlock(&lock);
         return 0;
-      } else {
+      } 
+    }
+   
+    for(int i = 0; i < TLB_ENTRIES; i++) {
+      if(!tlb_store.in_use[i]) {
         tlb_store.vpn[i] = vpn;
-        tlb_store.pte[i] = pte;
+        tlb_store.pte[i] = pte_ptr;
         tlb_store.in_use[i] = true;
         tlb_store.last_used[i] = tlb_lookups;
         pthread_mutex_unlock(&lock);
         return 0;
       }
-     
+    }
+ 
     pthread_mutex_unlock(&lock);
     return -1;
-    }
-    
-
-    return -1; // Currently returns failure placeholder.
 }
 
 /*
@@ -156,8 +151,9 @@ pte_t *TLB_check(void *va)
     for(int i = 0; i < TLB_ENTRIES; i++) {
       if(tlb_store.in_use[i] && target_vpn == tlb_store.vpn[i]) {
         tlb_store.last_used[i] = tlb_lookups;
+
         pthread_mutex_unlock(&lock);
-        return &tlb_store.pte[i];
+        return tlb_store.pte[i];
       }
     }
     
@@ -183,6 +179,11 @@ void print_TLB_missrate(void)
     }
     
     fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+    fprintf(stderr, "TLB Lookups: %llu\n", tlb_lookups);
+    fprintf(stderr, "TLB Misses:  %llu\n", tlb_misses);
+    fprintf(stderr, "TLB Hits:    %llu\n", tlb_lookups - tlb_misses);
+    fprintf(stderr, "TLB miss rate: %lf (%.4f%%)\n", miss_rate, miss_rate * 100);
+    fprintf(stderr, "TLB hit rate:  %.4f%%\n", (1.0 - miss_rate) * 100);
 }
 
 // -----------------------------------------------------------------------------
@@ -215,11 +216,11 @@ pte_t* translate(pde_t* pgdir, void* va)
     }
 
     // tlb miss: procedure
-    pthread_mutex_lock(&two_op_lock);
+    pthread_mutex_lock(&pg_tbl_lock);
     pde_t pgdir_entry = pgdir[pgdir_idx];
 
     if(pgdir_entry == 0) {
-      pthread_mutex_unlock(&two_op_lock);
+      pthread_mutex_unlock(&pg_tbl_lock);
       return NULL;
     } 
 
@@ -230,15 +231,15 @@ pte_t* translate(pde_t* pgdir, void* va)
     pte_t* pgtbl_entry_ptr = &(pgtbl[pgtbl_idx]);
 
     if(pgtbl_entry_ptr == NULL) {
-      pthread_mutex_unlock(&two_op_lock);
+      pthread_mutex_unlock(&pg_tbl_lock);
       return NULL;
     }
 
     paddr32_t pa = (*pgtbl_entry_ptr & ~OFFMASK);
     void* pa_ptr = (char*)p_buff + pa; 
-    TLB_add(va, pa_ptr);
+    pthread_mutex_unlock(&pg_tbl_lock);
 
-    pthread_mutex_unlock(&two_op_lock);
+    TLB_add(va, pgtbl_entry_ptr);
 
     return pgtbl_entry_ptr;
 }
@@ -261,14 +262,15 @@ int map_page(pde_t *pgdir, void *va, void *pa)
     vaddr32_t v_addr = VA2U(va);
     uint32_t pgdir_idx = PDX(v_addr);
     uint32_t pgtbl_idx = PTX(v_addr);
-  
+ 
+    pthread_mutex_lock(&pg_tbl_lock);
     // "upsert" the target page table
     if(!(pgdir[pgdir_idx] & IN_USE)) {
       // allocate pgtbl and zero it
 
       void* pgtbl_frame = alloc_frame();
       if(pgtbl_frame == NULL) {
-        pthread_mutex_unlock(&multi_op_lock);
+        pthread_mutex_unlock(&pg_tbl_lock);
         return -1;
       }
       
@@ -284,9 +286,11 @@ int map_page(pde_t *pgdir, void *va, void *pa)
       uint32_t pa_offset = (char*)pa - (char*)p_buff;
       pgtbl[pgtbl_idx] = pa_offset | IN_USE;
 
+      pthread_mutex_unlock(&pg_tbl_lock);
       return 0;
     }
 
+    pthread_mutex_unlock(&pg_tbl_lock);
     return -1;
 
 }
@@ -311,6 +315,7 @@ void *get_next_avail(int num_pages)
 
     uint32_t chunk_start; 
     uint32_t ctr = 0;
+    pthread_mutex_lock(&lock);
     for(int i = 0; i < (MAX_MEMSIZE / PGSIZE) ; i++) {
       if(get_bit(v_bmap, i) == 0) {
         if(ctr == 0) {
@@ -321,11 +326,13 @@ void *get_next_avail(int num_pages)
         if(ctr == num_pages) {
           // return void* to the corresponding vpage addr
           uint32_t vpage_byte_offset = chunk_start * PGSIZE;
+          pthread_mutex_unlock(&lock);
           return U2VA(vpage_byte_offset);
         }
       } else ctr = 0; 
     }
 
+    pthread_mutex_unlock(&lock);
     return NULL; // No available block placeholder.
 }
 
@@ -371,7 +378,9 @@ void *n_malloc(unsigned int num_bytes)
       }
 
       uint32_t v_page_bit_idx = (va_base / PGSIZE) + i;
+      pthread_mutex_lock(&lock);
       set_bit(v_bmap, v_page_bit_idx);
+      pthread_mutex_unlock(&lock);
     }
 
     pthread_mutex_unlock(&multi_op_lock);
@@ -403,17 +412,19 @@ void n_free(void *va, int size)
     
     // clear corresponding v_page bit
     uint32_t v_page_bit_idx = va / PGSIZE;
+    pthread_mutex_lock(&lock);
     clear_bit(v_bmap, v_page_bit_idx);
 
     // clear corresponding p_frame bit
     paddr32_t pa = (*pte & ~OFFMASK);
-    pthread_mutex_lock(&lock);
     uint32_t p_frame_bit_idx = (pa - (paddr32_t)(uintptr_t)p_buff) / PGSIZE;
-    pthread_mutex_unlock(&lock);
     clear_bit(p_bmap, p_frame_bit_idx);
-    
+    pthread_mutex_unlock(&lock);
     // clear corresponding pgtbl entry
+
+    pthread_mutex_lock(&pg_tbl_lock);
     *pte = 0;
+    pthread_mutex_unlock(&pg_tbl_lock);
   }
 }
 
@@ -501,28 +512,22 @@ void set_bit(char* bmap, int idx) {
   uint32_t target_byte = idx / 8;
   uint8_t target_bit = idx % 8;
     
-  pthread_mutex_lock(&lock);
   bmap[target_byte] |= (1 << (target_bit));
-  pthread_mutex_unlock(&lock);
 }
 
 void clear_bit(char* bmap, int idx) {
   uint32_t target_byte = idx / 8;
   uint8_t target_bit  = idx % 8;
 
-  pthread_mutex_lock(&lock);
   bmap[target_byte] &= ~(1 << (target_bit));
-  pthread_mutex_unlock(&lock);
 }
 
 int get_bit(char* bmap, int idx) {
   uint32_t target_byte = idx / 8;
   uint8_t target_bit  = idx % 8;
 
-  pthread_mutex_lock(&lock);
   int bit = bmap[target_byte] & (1 << (target_bit));
   int ret = bit != 0;
-  pthread_mutex_unlock(&lock);
 
   return ret;
 }
@@ -530,14 +535,14 @@ int get_bit(char* bmap, int idx) {
 void* alloc_frame() {
   for(uint32_t i = 0; i < MAX_NUM_FRAMES; i++) {
 
-    pthread_mutex_lock(&two_op_lock);
+    pthread_mutex_lock(&lock);
     if(get_bit(p_bmap, i) == 0) {
       set_bit(p_bmap, i);
       void* res = (void*)(p_buff + (i * PGSIZE));
-      pthread_mutex_unlock(&two_op_lock);
+      pthread_mutex_unlock(&lock);
       return res; 
     }
-    pthread_mutex_unlock(&two_op_lock);
+    pthread_mutex_unlock(&lock);
 
   }
   return NULL;        // bitmap is full (i.e. out of memory) 

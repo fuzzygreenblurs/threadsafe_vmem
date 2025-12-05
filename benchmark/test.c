@@ -5,7 +5,7 @@
 #include <inttypes.h>
 #include "../my_vm.h"
 
-#define SIZE 5
+#define SIZE 1000
 #define ARRAY_SIZE 400
 
 static inline uint32_t add_offset32(void *base_va, size_t off_bytes) {

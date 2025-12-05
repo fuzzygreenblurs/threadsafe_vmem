@@ -12,7 +12,7 @@ void *pointers[num_threads];
 int ids[num_threads];
 pthread_t threads[num_threads];
 int alloc_size = 10000;
-int matrix_size = 5;
+int matrix_size = 50;
 
 static inline uint32_t add_offset32(void *base_va, size_t off_bytes) {
     uint32_t base = VA2U(base_va);         // 32-bit simulated VA
