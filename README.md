@@ -5,9 +5,12 @@
 This is a project in thread-safe virtual memory management. The goal is to create a user-level page table from scratch that translates virtual addresses to physical addresses. Here, a 2-layer multi-level page table structure is used to achieve this. It is also supported by a translation lookaside buffer (TLB) cache to reduce translation costs. 
 
 
-The code can be found here. All relevant functions are packaged as a library as described in the writeup. They are prototyped in the `my_vm.h` file and their implementations can be found in the corresponding `my_vm.c` file.
+All relevant functions are packaged as a library as described in the writeup. They are prototyped in the `my_vm.h` file and their implementations can be found in the corresponding `my_vm.c` file.
 
 #### Compilation
+
+From the root directory of the project: 
+
 - compiling the library: `make clean && make`
 - compiling the tests: `cd benchmark && make clean && make`
 
